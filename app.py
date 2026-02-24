@@ -9,16 +9,17 @@ import re
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-# --- 1. 데이터 파싱 (A열: 코드, B열: 명칭 분리) ---
+# --- 1. 데이터 파싱 및 트리 구조화 ---
 def parse_data(df):
     structured_data = []
     for _, row in df.iterrows():
-        # A열과 B열의 데이터를 가져옴 (비어있을 경우 대비)
+        # A열(코드), B열(명칭) 가져오기
         code = str(row[0]).strip() if pd.notnull(row[0]) else ""
         name = str(row[1]).strip() if pd.notnull(row[1]) else ""
         
-        if not code: continue # 코드가 없으면 스킵
+        if not code: continue
 
+        # 코드에서 레벨 계산 (예: 1.1.2 -> 레벨 3)
         match = re.match(r'^([\d\.]+)', code)
         if match:
             clean_code = match.group(1).rstrip('.')
@@ -32,11 +33,14 @@ def parse_data(df):
     return structured_data
 
 def build_tree(data):
+    # 숫자 순서대로 정렬 (1.2 다음 1.10이 오도록 처리)
+    def split_code(c):
+        return [int(i) for i in c['id_code'].split('.')]
+    
+    data.sort(key=split_code)
+    
     nodes = {}
     root_nodes = []
-    # ID 코드 순으로 정렬 (계층 구조 보장)
-    data.sort(key=lambda x: [int(i) for i in x['id_code'].split('.')])
-    
     for item in data:
         code = item['id_code']
         node = {
@@ -58,7 +62,7 @@ def build_tree(data):
             root_nodes.append(node)
     return root_nodes
 
-# --- 2. 좌표 계산 로직 ---
+# --- 2. 좌표 및 레이아웃 계산 ---
 def calculate_layout(root_nodes, config):
     layout_data = []
     wbs_w = config['wbs_w']
@@ -66,7 +70,11 @@ def calculate_layout(root_nodes, config):
     l1_gap_x = config['l1_gap_x']
     l2_gap_x = config['l2_gap_x']
     v_gap_a = config['v_gap_a']
-    extra_gaps = {3: config['extra_l3'], 4: config['extra_l4'], 5: config['extra_l5']}
+    extra_gaps = {
+        3: config['extra_l3'],
+        4: config['extra_l4'],
+        5: config['extra_l5']
+    }
 
     start_x = (33.8 - wbs_w) / 2
     start_y = (19.05 - wbs_h) / 2
@@ -77,16 +85,20 @@ def calculate_layout(root_nodes, config):
 
     for i, l1 in enumerate(root_nodes):
         x_l1 = start_x + (i * (l1_width + l1_gap_x))
-        layout_data.append({'node': l1, 'x': x_l1, 'y': start_y, 'w': l1_width, 'h': 1.0, 'level': 1})
+        y_l1 = start_y
+        h_l1 = 1.0
+        layout_data.append({'node': l1, 'x': x_l1, 'y': y_l1, 'w': l1_width, 'h': h_l1, 'level': 1})
 
         if l1['children']:
             l2_count = len(l1['children'])
             l2_width = (l1_width - (l2_gap_x * (l2_count - 1))) / l2_count
-            current_y_for_l2 = start_y + 1.0 + v_gap_a
+            current_y_for_l2 = y_l1 + h_l1 + v_gap_a
 
             for j, l2 in enumerate(l1['children']):
                 x_l2 = x_l1 + (j * (l2_width + l2_gap_x))
-                layout_data.append({'node': l2, 'x': x_l2, 'y': current_y_for_l2, 'w': l2_width, 'h': 1.0, 'level': 2})
+                y_l2 = current_y_for_l2
+                h_l2 = 1.0
+                layout_data.append({'node': l2, 'x': x_l2, 'y': y_l2, 'w': l2_width, 'h': h_l2, 'level': 2})
 
                 def stack_recursive(parent_node, px, py, pw, ph):
                     nonlocal layout_data
@@ -98,14 +110,15 @@ def calculate_layout(root_nodes, config):
                         reduction = 0.3 * (lvl - 2)
                         c_w = max(l2_width - reduction, 4.0) 
                         c_x = (px + pw) - c_w
-                        layout_data.append({'node': child, 'x': c_x, 'y': target_y, 'w': c_w, 'h': 0.8, 'level': lvl})
-                        last_y = stack_recursive(child, c_x, target_y, c_w, 0.8)
+                        c_h = 0.8
+                        layout_data.append({'node': child, 'x': c_x, 'y': target_y, 'w': c_w, 'h': c_h, 'level': lvl})
+                        last_y = stack_recursive(child, c_x, target_y, c_w, c_h)
                     return last_y
 
-                stack_recursive(l2, x_l2, current_y_for_l2, l2_width, 1.0)
+                stack_recursive(l2, x_l2, y_l2, l2_width, h_l2)
     return layout_data
 
-# --- 3. 미리보기 (Matplotlib - 이중 박스 시각화) ---
+# --- 3. 실시간 미리보기 (Matplotlib) ---
 def draw_preview(layout_data, code_width_cm):
     fig, ax = plt.subplots(figsize=(12, 6.75))
     ax.set_xlim(0, 33.8)
@@ -120,35 +133,27 @@ def draw_preview(layout_data, code_width_cm):
         lvl = item['level']
         node = item['node']
 
-        # 색상 설정
         if lvl == 1: color, text_c = '#1f497d', 'white'
         elif lvl == 2: color, text_c = '#365f91', 'white'
         else: color, text_c = '#f2f2f2', 'black'
 
-        # 1. 메인 박스 (명칭용)
-        rect_main = patches.Rectangle((x, y), w, h, linewidth=0.5, edgecolor='#aaaaaa', facecolor=color)
-        ax.add_patch(rect_main)
+        # 1. 메인 박스
+        ax.add_patch(patches.Rectangle((x, y), w, h, linewidth=0.5, edgecolor='#aaaaaa', facecolor=color))
 
-        # 2. 코드 박스 (A열용)
+        # 2. 코드 박스
         code_color = '#14325a' if lvl <= 2 else '#dddddd'
         code_text_c = 'white' if lvl <= 2 else 'black'
-        rect_code = patches.Rectangle((x, y), code_width_cm, h, linewidth=0.5, edgecolor='#666666', facecolor=code_color)
-        ax.add_patch(rect_code)
+        ax.add_patch(patches.Rectangle((x, y), code_width_cm, h, linewidth=0.5, edgecolor='#666666', facecolor=code_color))
 
-        # 3. 텍스트 표시
-        # 코드 텍스트 (가운데 정렬)
-        ax.text(x + code_width_cm/2, y + h/2, node['code_text'], color=code_text_c, 
-                fontsize=6, ha='center', va='center', fontweight='bold')
-        
-        # 명칭 텍스트 (왼쪽 정렬, 코드박스만큼 띄움)
+        # 3. 텍스트
+        ax.text(x + code_width_cm/2, y + h/2, node['code_text'], color=code_text_c, fontsize=6, ha='center', va='center', fontweight='bold')
         display_name = (node['name_text'][:20] + '..') if len(node['name_text']) > 20 else node['name_text']
-        ax.text(x + code_width_cm + 0.2, y + h/2, display_name, color=text_c, 
-                fontsize=6, ha='left', va='center')
+        ax.text(x + code_width_cm + 0.2, y + h/2, display_name, color=text_c, fontsize=6, ha='left', va='center')
 
     ax.set_axis_off()
     st.pyplot(fig)
 
-# --- 4. PPT 생성 ---
+# --- 4. PPT 생성 (TypeError 수정 버전) ---
 def generate_ppt(layout_data, code_width_cm):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Cm(33.8), Cm(19.05)
@@ -159,29 +164,39 @@ def generate_ppt(layout_data, code_width_cm):
         lvl = item['level']
         x, y, w, h = item['x'], item['y'], item['w'], item['h']
 
-        # 1. 메인 박스
+        # 1. 메인 박스 (명칭용)
         main_shp = slide.shapes.add_shape(1, Cm(x), Cm(y), Cm(w), Cm(h))
         main_shp.line.color.rgb = RGBColor(150, 150, 150)
-        if lvl == 1: main_shp.fill.fore_color.rgb = RGBColor(31, 73, 125)
-        elif lvl == 2: main_shp.fill.fore_color.rgb = RGBColor(54, 95, 145)
-        else: 
+        
+        # [수정] 단색 채우기 선언 후 색상 적용
+        main_shp.fill.solid()
+        if lvl == 1:
+            main_shp.fill.fore_color.rgb = RGBColor(31, 73, 125)
+        elif lvl == 2:
+            main_shp.fill.fore_color.rgb = RGBColor(54, 95, 145)
+        else:
             c = min(230 + (lvl * 3), 250)
             main_shp.fill.fore_color.rgb = RGBColor(c, c, c+5)
 
-        # 1-1. 명칭 텍스트 (여백 설정 중요)
+        # 메인 텍스트 (명칭)
         tf = main_shp.text_frame
         tf.text = node['name_text']
-        tf.margin_left = Cm(code_width_cm + 0.2) # 핵심: 코드박스 너비만큼 텍스트 밀기
-        tf.vertical_anchor = 1 # Middle
+        tf.margin_left = Cm(code_width_cm + 0.2) # 코드박스만큼 여백
+        tf.vertical_anchor = 1 # Middle 정렬
         p = tf.paragraphs[0]
         p.alignment = PP_ALIGN.LEFT
         p.font.size = Pt(9 if lvl > 2 else 11)
         p.font.color.rgb = RGBColor(255, 255, 255) if lvl <= 2 else RGBColor(0, 0, 0)
 
-        # 2. 코드 박스 (위에 덮어씀)
+        # 2. 코드 박스 (A열용 - 메인박스 위에 덮음)
         code_shp = slide.shapes.add_shape(1, Cm(x), Cm(y), Cm(code_width_cm), Cm(h))
-        if lvl <= 2: code_shp.fill.fore_color.rgb = RGBColor(20, 50, 90)
-        else: code_shp.fill.fore_color.rgb = RGBColor(200, 200, 200)
+        
+        # [수정] 단색 채우기 선언 후 색상 적용
+        code_shp.fill.solid()
+        if lvl <= 2:
+            code_shp.fill.fore_color.rgb = RGBColor(20, 50, 90)
+        else:
+            code_shp.fill.fore_color.rgb = RGBColor(200, 200, 200)
         
         code_tf = code_shp.text_frame
         code_tf.text = node['code_text']
@@ -196,28 +211,30 @@ def generate_ppt(layout_data, code_width_cm):
 # --- 5. Streamlit UI ---
 st.set_page_config(page_title="WBS Master Pro", layout="wide")
 
-st.sidebar.title("🎨 디자인 설정")
+st.sidebar.title("🎨 디자인 및 간격 설정")
 code_w_input = st.sidebar.slider("코드 박스 너비 (cm)", 1.0, 5.0, 2.5, 0.1)
 
-with st.sidebar.expander("📏 캔버스 및 간격 설정", expanded=True):
+with st.sidebar.expander("📏 캔버스 및 기본 간격", expanded=True):
     wbs_w = st.number_input("WBS 전체 너비", 10.0, 32.0, 31.0)
     wbs_h = st.number_input("WBS 전체 높이", 5.0, 18.0, 16.0)
     v_gap_a = st.number_input("기준 수직 간격 (A)", 0.0, 5.0, 0.4, 0.05)
     l1_gap_x = st.number_input("L1 좌우 간격", 0.0, 10.0, 1.2)
     l2_gap_x = st.number_input("L2 좌우 간격", 0.0, 5.0, 0.4)
-    extra_l3 = st.number_input("L3 그룹 간 추가 여백", 0.0, 5.0, 0.3)
-    extra_l4 = st.number_input("L4 그룹 간 추가 여백", 0.0, 5.0, 0.2)
-    extra_l5 = st.number_input("L5+ 그룹 간 추가 여백", 0.0, 5.0, 0.1)
+
+with st.sidebar.expander("↕️ 그룹간 추가 여백 (줄기 변경 시)"):
+    extra_l3 = st.number_input("L3 그룹 간 추가", 0.0, 5.0, 0.3)
+    extra_l4 = st.number_input("L4 그룹 간 추가", 0.0, 5.0, 0.2)
+    extra_l5 = st.number_input("L5+ 그룹 간 추가", 0.0, 5.0, 0.1)
 
 config = {
     'wbs_w': wbs_w, 'wbs_h': wbs_h, 'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x,
     'v_gap_a': v_gap_a, 'extra_l3': extra_l3, 'extra_l4': extra_l4, 'extra_l5': extra_l5
 }
 
-st.title("📊 WBS 마스터 (A열 코드 + B열 명칭)")
-st.caption("Excel: A열에는 '1.1' 같은 코드, B열에는 '명칭'이 있어야 합니다.")
+st.title("📊 WBS 마스터 디자이너")
+st.info("💡 엑셀의 A열은 코드(예: 1.1), B열은 작업명칭으로 구성해주세요.")
 
-uploaded_file = st.file_uploader("엑셀 파일 업로드", type=["xlsx"])
+uploaded_file = st.file_uploader("엑셀 파일(.xlsx) 업로드", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -227,12 +244,15 @@ if uploaded_file:
         tree = build_tree(raw_data)
         layout_data = calculate_layout(tree, config)
         
-        st.subheader("🖼️ 실시간 디자인 미리보기")
+        st.subheader("🖼️ 슬라이드 디자인 미리보기")
         draw_preview(layout_data, code_w_input)
         
         if st.button("🚀 PPT 생성 및 다운로드", use_container_width=True):
-            final_ppt = generate_ppt(layout_data, code_w_input)
-            ppt_io = io.BytesIO()
-            final_ppt.save(ppt_io)
-            ppt_io.seek(0)
-            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "WBS_Professional.pptx")
+            try:
+                final_ppt = generate_ppt(layout_data, code_w_input)
+                ppt_io = io.BytesIO()
+                final_ppt.save(ppt_io)
+                ppt_io.seek(0)
+                st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Smart_WBS_Layout.pptx")
+            except Exception as e:
+                st.error(f"PPT 생성 중 오류 발생: {e}")
