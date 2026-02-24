@@ -203,4 +203,39 @@ with st.sidebar.expander("🎨 레벨별 색상 설정", expanded=True):
 code_w_input = st.sidebar.slider("코드 박스 너비 (cm)", 1.0, 5.0, 2.5, 0.1)
 
 with st.sidebar.expander("📏 캔버스 및 기본 간격", expanded=True):
-    wbs_w = st.number_input("
+    wbs_w = st.number_input("WBS 전체 너비", 10.0, 32.0, 31.0)
+    wbs_h = st.number_input("WBS 전체 높이", 5.0, 18.0, 16.0)
+    v_gap_a = st.number_input("기준 수직 간격 (A)", 0.0, 5.0, 0.4, 0.05)
+    l1_gap_x = st.number_input("L1 좌우 간격", 0.0, 10.0, 1.2)
+    l2_gap_x = st.number_input("L2 좌우 간격", 0.0, 5.0, 0.4)
+
+with st.sidebar.expander("↕️ 그룹간 추가 여백"):
+    extra_l3 = st.number_input("L3 그룹 간 추가", 0.0, 5.0, 0.3)
+    extra_l4 = st.number_input("L4 그룹 간 추가", 0.0, 5.0, 0.2)
+    extra_l5 = st.number_input("L5+ 그룹 간 추가", 0.0, 5.0, 0.1)
+
+config = {
+    'wbs_w': wbs_w, 'wbs_h': wbs_h, 'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x,
+    'v_gap_a': v_gap_a, 'extra_l3': extra_l3, 'extra_l4': extra_l4, 'extra_l5': extra_l5
+}
+
+st.title("📊 WBS 마스터 디자이너")
+uploaded_file = st.file_uploader("엑셀 파일(.xlsx) 업로드", type=["xlsx"])
+
+if uploaded_file:
+    df = pd.read_excel(uploaded_file)
+    raw_data = parse_data(df)
+    if raw_data:
+        tree = build_tree(raw_data)
+        layout_data = calculate_layout(tree, config)
+        st.subheader("🖼️ 슬라이드 디자인 미리보기")
+        draw_preview(layout_data, code_w_input, level_colors)
+        if st.button("🚀 PPT 생성 및 다운로드", use_container_width=True):
+            try:
+                final_ppt = generate_ppt(layout_data, code_w_input, level_colors)
+                ppt_io = io.BytesIO()
+                final_ppt.save(ppt_io)
+                ppt_io.seek(0)
+                st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Smart_WBS_Accent.pptx")
+            except Exception as e:
+                st.error(f"PPT 생성 중 오류 발생: {e}")
