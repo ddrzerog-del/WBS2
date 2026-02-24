@@ -111,14 +111,18 @@ def draw_preview(layout_data, code_width_cm, level_colors):
         lvl = item['level']
         node = item['node']
         
-        # 선택된 컬러 적용
         lvl_key = f"L{lvl}" if lvl <= 4 else "L5+"
         color = level_colors[lvl_key]
         text_c = 'white' if lvl <= 2 else 'black'
 
+        # 1. 메인 박스
         ax.add_patch(patches.Rectangle((x, y), w, h, linewidth=0.5, edgecolor='#aaaaaa', facecolor=color))
-        # 코드 박스 (살짝 어둡게 오버레이)
+        
+        # 2. 코드 박스 (살짝 어둡게 오버레이)
         ax.add_patch(patches.Rectangle((x, y), code_width_cm, h, linewidth=0.5, edgecolor='#666666', facecolor='#000000', alpha=0.05))
+        
+        # [신규] 3. 가장 왼쪽 0.2cm 포인트 띠 (Accent Strip)
+        ax.add_patch(patches.Rectangle((x, y), 0.2, h, linewidth=0, facecolor='#000000', alpha=0.3))
         
         ax.text(x + code_width_cm/2, y + h/2, node['code_text'], color=text_c, fontsize=6, ha='center', va='center', fontweight='bold')
         display_name = (node['name_text'][:20] + '..') if len(node['name_text']) > 20 else node['name_text']
@@ -126,7 +130,7 @@ def draw_preview(layout_data, code_width_cm, level_colors):
     ax.set_axis_off()
     st.pyplot(fig)
 
-# --- 4. PPT 생성 (컬러 반영 및 그림자 제거) ---
+# --- 4. PPT 생성 (그림자 제거 + 포인트 띠 추가) ---
 def generate_ppt(layout_data, code_width_cm, level_colors):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Cm(33.8), Cm(19.05)
@@ -145,7 +149,7 @@ def generate_ppt(layout_data, code_width_cm, level_colors):
         main_shp.line.color.rgb = RGBColor(150, 150, 150)
         main_shp.fill.solid()
         main_shp.fill.fore_color.rgb = RGBColor(*rgb)
-        main_shp.shadow.inherit = False  # 그림자 제거
+        main_shp.shadow.inherit = False 
 
         tf = main_shp.text_frame
         tf.text = node['name_text']
@@ -156,12 +160,12 @@ def generate_ppt(layout_data, code_width_cm, level_colors):
         p.font.size = Pt(9 if lvl > 2 else 11)
         p.font.color.rgb = RGBColor(255, 255, 255) if lvl <= 2 else RGBColor(0, 0, 0)
 
-        # 2. 코드 박스
+        # 2. 코드 박스 (위에 덮음)
         code_shp = slide.shapes.add_shape(1, Cm(x), Cm(y), Cm(code_width_cm), Cm(h))
         code_shp.fill.solid()
         code_shp.fill.fore_color.rgb = RGBColor(*rgb)
         code_shp.line.color.rgb = RGBColor(150, 150, 150)
-        code_shp.shadow.inherit = False  # 그림자 제거
+        code_shp.shadow.inherit = False 
         
         code_tf = code_shp.text_frame
         code_tf.text = node['code_text']
@@ -171,14 +175,23 @@ def generate_ppt(layout_data, code_width_cm, level_colors):
         code_p.font.bold = True
         code_p.font.color.rgb = RGBColor(255, 255, 255) if lvl <= 2 else RGBColor(0, 0, 0)
 
+        # [신규 추가] 3. 가장 왼쪽 0.2cm 포인트 띠 (Accent Strip)
+        accent_shp = slide.shapes.add_shape(1, Cm(x), Cm(y), Cm(0.2), Cm(h))
+        accent_shp.fill.solid()
+        # 원본 색상보다 아주 약간 어둡게 하거나, 레벨이 높으면 검정계열로 강조
+        if lvl <= 2:
+            accent_shp.fill.fore_color.rgb = RGBColor(0, 0, 0) # L1, L2는 검정 포인트
+        else:
+            accent_shp.fill.fore_color.rgb = RGBColor(100, 100, 100) # 그 외는 회색 포인트
+        accent_shp.line.fill.background() # 테두리 없음
+        accent_shp.shadow.inherit = False
+
     return prs
 
-# --- 5. Streamlit UI ---
+# --- 5. Streamlit UI (기존과 동일) ---
 st.set_page_config(page_title="WBS Master Pro", layout="wide")
-
 st.sidebar.title("🎨 디자인 및 간격 설정")
 
-# 컬러 피커 추가
 with st.sidebar.expander("🎨 레벨별 색상 설정", expanded=True):
     c1 = st.color_picker("Level 1", "#1F497D")
     c2 = st.color_picker("Level 2", "#365F91")
@@ -190,39 +203,4 @@ with st.sidebar.expander("🎨 레벨별 색상 설정", expanded=True):
 code_w_input = st.sidebar.slider("코드 박스 너비 (cm)", 1.0, 5.0, 2.5, 0.1)
 
 with st.sidebar.expander("📏 캔버스 및 기본 간격", expanded=True):
-    wbs_w = st.number_input("WBS 전체 너비", 10.0, 32.0, 31.0)
-    wbs_h = st.number_input("WBS 전체 높이", 5.0, 18.0, 16.0)
-    v_gap_a = st.number_input("기준 수직 간격 (A)", 0.0, 5.0, 0.4, 0.05)
-    l1_gap_x = st.number_input("L1 좌우 간격", 0.0, 10.0, 1.2)
-    l2_gap_x = st.number_input("L2 좌우 간격", 0.0, 5.0, 0.4)
-
-with st.sidebar.expander("↕️ 그룹간 추가 여백"):
-    extra_l3 = st.number_input("L3 그룹 간 추가", 0.0, 5.0, 0.3)
-    extra_l4 = st.number_input("L4 그룹 간 추가", 0.0, 5.0, 0.2)
-    extra_l5 = st.number_input("L5+ 그룹 간 추가", 0.0, 5.0, 0.1)
-
-config = {
-    'wbs_w': wbs_w, 'wbs_h': wbs_h, 'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x,
-    'v_gap_a': v_gap_a, 'extra_l3': extra_l3, 'extra_l4': extra_l4, 'extra_l5': extra_l5
-}
-
-st.title("📊 WBS 마스터 디자이너")
-uploaded_file = st.file_uploader("엑셀 파일(.xlsx) 업로드", type=["xlsx"])
-
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
-    raw_data = parse_data(df)
-    if raw_data:
-        tree = build_tree(raw_data)
-        layout_data = calculate_layout(tree, config)
-        st.subheader("🖼️ 슬라이드 디자인 미리보기")
-        draw_preview(layout_data, code_w_input, level_colors)
-        if st.button("🚀 PPT 생성 및 다운로드", use_container_width=True):
-            try:
-                final_ppt = generate_ppt(layout_data, code_w_input, level_colors)
-                ppt_io = io.BytesIO()
-                final_ppt.save(ppt_io)
-                ppt_io.seek(0)
-                st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Smart_WBS_Layout.pptx")
-            except Exception as e:
-                st.error(f"PPT 생성 중 오류 발생: {e}")
+    wbs_w = st.number_input("
