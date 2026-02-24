@@ -13,10 +13,12 @@ import matplotlib.patches as patches
 def parse_data(df):
     structured_data = []
     for _, row in df.iterrows():
-        code = str(row[0]).strip() # A열
-        name = str(row[1]).strip() # B열
+        # A열과 B열의 데이터를 가져옴 (비어있을 경우 대비)
+        code = str(row[0]).strip() if pd.notnull(row[0]) else ""
+        name = str(row[1]).strip() if pd.notnull(row[1]) else ""
         
-        # 코드에서 레벨 계산 (1.1.2 -> 레벨 3)
+        if not code: continue # 코드가 없으면 스킵
+
         match = re.match(r'^([\d\.]+)', code)
         if match:
             clean_code = match.group(1).rstrip('.')
@@ -32,6 +34,9 @@ def parse_data(df):
 def build_tree(data):
     nodes = {}
     root_nodes = []
+    # ID 코드 순으로 정렬 (계층 구조 보장)
+    data.sort(key=lambda x: [int(i) for i in x['id_code'].split('.')])
+    
     for item in data:
         code = item['id_code']
         node = {
@@ -53,7 +58,7 @@ def build_tree(data):
             root_nodes.append(node)
     return root_nodes
 
-# --- 2. 좌표 계산 로직 (기존 로직 유지) ---
+# --- 2. 좌표 계산 로직 ---
 def calculate_layout(root_nodes, config):
     layout_data = []
     wbs_w = config['wbs_w']
@@ -91,7 +96,7 @@ def calculate_layout(root_nodes, config):
                         gap = v_gap_a + (extra_gaps.get(lvl, 0) if idx > 0 else 0)
                         target_y = last_y + gap
                         reduction = 0.3 * (lvl - 2)
-                        c_w = max(l2_width - reduction, 3.0) # 최소 너비 보장
+                        c_w = max(l2_width - reduction, 4.0) 
                         c_x = (px + pw) - c_w
                         layout_data.append({'node': child, 'x': c_x, 'y': target_y, 'w': c_w, 'h': 0.8, 'level': lvl})
                         last_y = stack_recursive(child, c_x, target_y, c_w, 0.8)
@@ -100,7 +105,50 @@ def calculate_layout(root_nodes, config):
                 stack_recursive(l2, x_l2, current_y_for_l2, l2_width, 1.0)
     return layout_data
 
-# --- 3. PPT 생성 (핵심 수정 부분: 이중 박스 처리) ---
+# --- 3. 미리보기 (Matplotlib - 이중 박스 시각화) ---
+def draw_preview(layout_data, code_width_cm):
+    fig, ax = plt.subplots(figsize=(12, 6.75))
+    ax.set_xlim(0, 33.8)
+    ax.set_ylim(0, 19.05)
+    ax.invert_yaxis()
+    
+    # 슬라이드 배경
+    ax.add_patch(patches.Rectangle((0, 0), 33.8, 19.05, linewidth=1, edgecolor='#cccccc', facecolor='#ffffff'))
+
+    for item in layout_data:
+        x, y, w, h = item['x'], item['y'], item['w'], item['h']
+        lvl = item['level']
+        node = item['node']
+
+        # 색상 설정
+        if lvl == 1: color, text_c = '#1f497d', 'white'
+        elif lvl == 2: color, text_c = '#365f91', 'white'
+        else: color, text_c = '#f2f2f2', 'black'
+
+        # 1. 메인 박스 (명칭용)
+        rect_main = patches.Rectangle((x, y), w, h, linewidth=0.5, edgecolor='#aaaaaa', facecolor=color)
+        ax.add_patch(rect_main)
+
+        # 2. 코드 박스 (A열용)
+        code_color = '#14325a' if lvl <= 2 else '#dddddd'
+        code_text_c = 'white' if lvl <= 2 else 'black'
+        rect_code = patches.Rectangle((x, y), code_width_cm, h, linewidth=0.5, edgecolor='#666666', facecolor=code_color)
+        ax.add_patch(rect_code)
+
+        # 3. 텍스트 표시
+        # 코드 텍스트 (가운데 정렬)
+        ax.text(x + code_width_cm/2, y + h/2, node['code_text'], color=code_text_c, 
+                fontsize=6, ha='center', va='center', fontweight='bold')
+        
+        # 명칭 텍스트 (왼쪽 정렬, 코드박스만큼 띄움)
+        display_name = (node['name_text'][:20] + '..') if len(node['name_text']) > 20 else node['name_text']
+        ax.text(x + code_width_cm + 0.2, y + h/2, display_name, color=text_c, 
+                fontsize=6, ha='left', va='center')
+
+    ax.set_axis_off()
+    st.pyplot(fig)
+
+# --- 4. PPT 생성 ---
 def generate_ppt(layout_data, code_width_cm):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Cm(33.8), Cm(19.05)
@@ -111,45 +159,32 @@ def generate_ppt(layout_data, code_width_cm):
         lvl = item['level']
         x, y, w, h = item['x'], item['y'], item['w'], item['h']
 
-        # 1. 메인 박스 (작업 명칭용)
+        # 1. 메인 박스
         main_shp = slide.shapes.add_shape(1, Cm(x), Cm(y), Cm(w), Cm(h))
         main_shp.line.color.rgb = RGBColor(150, 150, 150)
-        
-        # 레벨별 색상 설정
-        if lvl == 1:
-            main_shp.fill.fore_color.rgb = RGBColor(31, 73, 125)
-            text_color = RGBColor(255, 255, 255)
-        elif lvl == 2:
-            main_shp.fill.fore_color.rgb = RGBColor(54, 95, 145)
-            text_color = RGBColor(255, 255, 255)
-        else:
+        if lvl == 1: main_shp.fill.fore_color.rgb = RGBColor(31, 73, 125)
+        elif lvl == 2: main_shp.fill.fore_color.rgb = RGBColor(54, 95, 145)
+        else: 
             c = min(230 + (lvl * 3), 250)
             main_shp.fill.fore_color.rgb = RGBColor(c, c, c+5)
-            text_color = RGBColor(0, 0, 0)
 
-        # 메인 텍스트 설정 (왼쪽 여백 부여)
+        # 1-1. 명칭 텍스트 (여백 설정 중요)
         tf = main_shp.text_frame
         tf.text = node['name_text']
-        tf.margin_left = Cm(code_width_cm + 0.1) # 코드 박스 너비만큼 여백
+        tf.margin_left = Cm(code_width_cm + 0.2) # 핵심: 코드박스 너비만큼 텍스트 밀기
         tf.vertical_anchor = 1 # Middle
-        
         p = tf.paragraphs[0]
         p.alignment = PP_ALIGN.LEFT
         p.font.size = Pt(9 if lvl > 2 else 11)
-        p.font.color.rgb = text_color
+        p.font.color.rgb = RGBColor(255, 255, 255) if lvl <= 2 else RGBColor(0, 0, 0)
 
-        # 2. 코드 박스 (A열 내용용 - 메인 박스 위에 덧씌움)
+        # 2. 코드 박스 (위에 덮어씀)
         code_shp = slide.shapes.add_shape(1, Cm(x), Cm(y), Cm(code_width_cm), Cm(h))
-        code_shp.fill.solid()
-        # 코드 박스 색상은 메인보다 약간 어둡거나 밝게 구분
-        if lvl <= 2:
-            code_shp.fill.fore_color.rgb = RGBColor(20, 50, 90)
-        else:
-            code_shp.fill.fore_color.rgb = RGBColor(200, 200, 200)
+        if lvl <= 2: code_shp.fill.fore_color.rgb = RGBColor(20, 50, 90)
+        else: code_shp.fill.fore_color.rgb = RGBColor(200, 200, 200)
         
         code_tf = code_shp.text_frame
         code_tf.text = node['code_text']
-        code_tf.margin_left = 0
         code_p = code_tf.paragraphs[0]
         code_p.alignment = PP_ALIGN.CENTER
         code_p.font.size = Pt(8 if lvl > 2 else 10)
@@ -158,17 +193,16 @@ def generate_ppt(layout_data, code_width_cm):
 
     return prs
 
-# --- 4. Streamlit UI ---
-st.set_page_config(page_title="WBS Designer Pro", layout="wide")
+# --- 5. Streamlit UI ---
+st.set_page_config(page_title="WBS Master Pro", layout="wide")
+
 st.sidebar.title("🎨 디자인 설정")
+code_w_input = st.sidebar.slider("코드 박스 너비 (cm)", 1.0, 5.0, 2.5, 0.1)
 
-code_w_input = st.sidebar.slider("코드 박스 너비 (cm)", 1.0, 5.0, 2.0, 0.5)
-
-# (기본 간격 설정 등 기존 UI 동일...)
-with st.sidebar.expander("📏 캔버스 및 간격 설정"):
+with st.sidebar.expander("📏 캔버스 및 간격 설정", expanded=True):
     wbs_w = st.number_input("WBS 전체 너비", 10.0, 32.0, 31.0)
     wbs_h = st.number_input("WBS 전체 높이", 5.0, 18.0, 16.0)
-    v_gap_a = st.number_input("기준 수직 간격 (A)", 0.0, 5.0, 0.4)
+    v_gap_a = st.number_input("기준 수직 간격 (A)", 0.0, 5.0, 0.4, 0.05)
     l1_gap_x = st.number_input("L1 좌우 간격", 0.0, 10.0, 1.2)
     l2_gap_x = st.number_input("L2 좌우 간격", 0.0, 5.0, 0.4)
     extra_l3 = st.number_input("L3 그룹 간 추가 여백", 0.0, 5.0, 0.3)
@@ -180,9 +214,10 @@ config = {
     'v_gap_a': v_gap_a, 'extra_l3': extra_l3, 'extra_l4': extra_l4, 'extra_l5': extra_l5
 }
 
-st.title("📊 WBS 마스터 (A열 코드 + B열 명칭 분리형)")
+st.title("📊 WBS 마스터 (A열 코드 + B열 명칭)")
+st.caption("Excel: A열에는 '1.1' 같은 코드, B열에는 '명칭'이 있어야 합니다.")
 
-uploaded_file = st.file_uploader("엑셀 파일을 업로드하세요 (A열: 코드 / B열: 명칭)", type=["xlsx"])
+uploaded_file = st.file_uploader("엑셀 파일 업로드", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -192,11 +227,12 @@ if uploaded_file:
         tree = build_tree(raw_data)
         layout_data = calculate_layout(tree, config)
         
-        st.info(f"총 {len(layout_data)}개의 항목이 분석되었습니다.")
+        st.subheader("🖼️ 실시간 디자인 미리보기")
+        draw_preview(layout_data, code_w_input)
         
         if st.button("🚀 PPT 생성 및 다운로드", use_container_width=True):
             final_ppt = generate_ppt(layout_data, code_w_input)
             ppt_io = io.BytesIO()
             final_ppt.save(ppt_io)
             ppt_io.seek(0)
-            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Smart_WBS_Split.pptx")
+            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "WBS_Professional.pptx")
